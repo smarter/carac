@@ -189,24 +189,24 @@ object BytecodeGenerator {
     })
   }
 
+  /**
+   * Put the singleton value corresponding to `cls` on the stack.
+   * @pre must be the singleton type `Foo.type` of an object `Foo`.`
+   */
+  def emitObject(xb: CodeBuilder, cls: Class[?]): Unit =
+    val cd = clsDesc(cls)
+    xb.getstatic(cd, "MODULE$", cd)
+
   def emitMap[K, V](xb: CodeBuilder, entries: Iterable[(K, V)], emitKey: (CodeBuilder, K) => Any, emitValue: (CodeBuilder, V) => Any): Unit = {
-//    xb.invokestatic(
-//      clsDesc(classOf[scala.collection.mutable.HashMap[K, V]]),
-//      "empty",
-//      MethodTypeDesc.of(clsDesc(classOf[scala.collection.mutable.HashMap[_, _]])))
-    emitNew(xb, classOf[scala.collection.mutable.Map[K, V]], xb => xb)
+    val hashMapCompanionCls = classOf[scala.collection.mutable.HashMap.type]
+    val hashMapCls = classOf[scala.collection.mutable.HashMap[?, ?]]
+    emitObject(xb, hashMapCompanionCls)
+    emitCall(xb, hashMapCompanionCls, "empty")
     entries.foreach { case (key, value) =>
       xb.dup()
       emitKey(xb, key)
       emitValue(xb, value)
-      xb.invokevirtual(
-        clsDesc(classOf[scala.collection.immutable.HashMap[_, _]]),
-        "put",
-        MethodTypeDesc.of(
-          clsDesc(classOf[scala.collection.immutable.HashMap[_, _]]),
-          clsDesc(classOf[Any]), clsDesc(classOf[Any]))
-      )
-      xb.pop() // Discard the return value of put()
+      emitCall(xb, hashMapCls, "update", classOf[Object], classOf[Object])
     }
   }
 

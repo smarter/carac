@@ -419,7 +419,7 @@ class StagedCompiler(val storageManager: StorageManager)(using val jitOptions: J
     private def emitExtra(xb: CodeBuilder, extra: Map[Int, String]): Unit =
 //      emitSeq(xb, extra.map(e => xxb => emitStringConstantTuple2(xxb, e)))
 //      emitMap(xb, extra.toSeq, emitInteger, (xxb, s) => xxb.constantInstruction(s))
-      emitMap(xb, extra.toSeq, (xxb, s) => xxb.constantInstruction(s), (xxb, value) => xxb.constantInstruction(value))
+      emitMap(xb, extra.toSeq, (xxb, i) => emitInteger(xxb, i), (xxb, string) => xxb.constantInstruction(string))
   }
 
   def getBytecodeGenerated[T](irTree: IROp[T]): CompiledFn[T] = {
