@@ -751,6 +751,16 @@ def run_pipeline_baseline(src: String, producer: String, consumer: String) = {
   val volcano = new VolcanoStorageManager()
   val inputData = CollectionsEDB(mutable.ArrayBuffer[CollectionsRow](CollectionsRow(Seq(1,2,3))))
   val operators = VolcanoOperators(volcano)
+
+  val pipeline1 = operators.scanFromScalaSource("Foo",
+    """
+   |class Foo:
+   |  def main(args: Array[String]): Unit =
+   |    val inputs = for i <- 0 until 100 yield i * 2
+   |    inputs.foreach: input =>
+   |      System.out.println(input.toString)
+   |""".stripMargin)
+
 //  val pipeline =
 //    operators.Scan(inputData, 0)
 //    operators.UDFProjectOperator(producer,

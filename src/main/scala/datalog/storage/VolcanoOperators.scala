@@ -74,6 +74,33 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 //        }
   }
 
+  def scanFromScalaSource(mainClass: String, code: String): VolOperator = {
+    // Create a new compiler every time since it is not thread-safe.
+    val pipeline = (new ScalaCompiler).compileFromCode(mainClass, code)
+    pipeline match
+      case Command(scanCommand) :: rest =>
+        rest.foldLeft[VolOperator](UDFScanOperator(scanCommand.mkString(" ")))((acc, program) => program match
+          case Command(projectCommand) =>
+            UDFProjectOperator(projectCommand.mkString(" "), acc)
+          case builtin: Builtin =>
+            BuiltinProjectOperator(builtin, acc)
+        )
+      case _ =>
+        assert(false, s"Invalid scan pipeline: $pipeline")
+  }
+
+  case class BuiltinProjectOperator(builtin: Builtin, input: VolOperator) extends VolOperator {
+    def open(): Unit = input.open()
+    def close(): Unit = input.close()
+
+    val projection: CollectionsRow => CollectionsRow = builtin match
+      case Builtin.IntToAscii =>
+        in => // ??? I'd expect this to be an sequence of Byte, but that's not the case
+          in(0).toByte + (in(1).toByte << 8) + (in(2).toByte << 16) + (in(3).toByte << 24)
+    override def next(): Option[CollectionsRow] =
+      input.next().map(projection)
+  }
+
   case class UDFScanOperator(path: String) extends VolOperator {
     val outputRelation = CollectionsEDB()
     var index = 0
