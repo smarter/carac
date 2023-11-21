@@ -95,8 +95,11 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 
     val projection: CollectionsRow => CollectionsRow = builtin match
       case Builtin.IntToAscii =>
-        in => // ??? I'd expect this to be an sequence of Byte, but that's not the case
-          in(0).toByte + (in(1).toByte << 8) + (in(2).toByte << 16) + (in(3).toByte << 24)
+        in =>
+          val bytes = in.asInstanceOf[String].getBytes
+          val res =
+            bytes(0).toByte + (bytes(1).toByte << 8) + (bytes(2).toByte << 16) + (bytes(3).toByte << 24)
+          CollectionsRow(Seq(res))
     override def next(): Option[CollectionsRow] =
       input.next().map(projection)
   }
