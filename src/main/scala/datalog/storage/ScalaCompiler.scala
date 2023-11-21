@@ -22,13 +22,14 @@ import dotty.tools.uncheckedNN
 import ast.tpd.*
 import compiletime.uninitialized
 
+import java.nio.ByteOrder
 import java.nio.file.Paths
 
 sealed trait Program
 case class Command(command: List[String]) extends Program
-enum Builtin extends Program:
-  /** Little-Endian Ints => ASCII. */
-  case IntToAscii
+enum Builtin(val inputMD: Metadata, val outputMD: Metadata) extends Program:
+  /** Big-Endian Ints => CSV. */
+  case BEIntToCSV extends Builtin(Metadata.Binary(4, ByteOrder.BIG_ENDIAN), Metadata.CSV)
 
 class ScalaCompiler extends Driver:
   private val splitProgram = SplitProgram()
@@ -98,7 +99,7 @@ class SplitProgram extends MacroTransform with IdentityDenotTransformer:
         && (qual.tpe <:< defn.IntType) =>
           // Factor out conversion in a separate program
           assert(postProcessing.isEmpty, postProcessing)
-          postProcessing = Some(Builtin.IntToAscii)
+          postProcessing = Some(Builtin.BEIntToCSV)
           // Rewrite System.out.println(x.toString) to
           // Utils.printIntAsLE(x)
           ref(printIntAsLESym).appliedTo(qual)

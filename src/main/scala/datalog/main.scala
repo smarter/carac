@@ -3,7 +3,7 @@ package datalog
 import buildinfo.BuildInfo
 import datalog.dsl.*
 import datalog.execution.{Backend, CompileSync, ExecutionEngine, Granularity, JITOptions, NaiveExecutionEngine, SemiNaiveExecutionEngine, SortOrder, StagedExecutionEngine, ir, Mode as CaracMode}
-import datalog.storage.{CollectionsEDB, CollectionsRow, DefaultStorageManager, VolcanoOperators, VolcanoStorageManager}
+import datalog.storage.{CollectionsEDB, CollectionsRow, DefaultStorageManager, Metadata, VolcanoOperators, VolcanoStorageManager}
 
 import java.nio.ByteOrder
 import scala.util.Using
@@ -752,15 +752,6 @@ def run_pipeline_baseline(src: String, producer: String, consumer: String) = {
   val inputData = CollectionsEDB(mutable.ArrayBuffer[CollectionsRow](CollectionsRow(Seq(1,2,3))))
   val operators = VolcanoOperators(volcano)
 
-  val pipeline1 = operators.scanFromScalaSource("Foo",
-    """
-   |class Foo:
-   |  def main(args: Array[String]): Unit =
-   |    val inputs = for i <- 0 until 100 yield i * 2
-   |    inputs.foreach: input =>
-   |      System.out.println(input.toString)
-   |""".stripMargin)
-
 //  val pipeline =
 //    operators.Scan(inputData, 0)
 //    operators.UDFProjectOperator(producer,
@@ -782,9 +773,9 @@ def run_pipeline_adds(projectPath: String) = {
 
   val operators = VolcanoOperators(volcano)
   val src = operators.Scan(inputData, 0)
-  val producer = operators.UDFProjectOperator(projectPath, src, outputMD = operators.Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
-  val intermediate = operators.UDFProjectOperator(projectPath, producer,  outputMD = operators.Metadata.Binary(4, ByteOrder.BIG_ENDIAN), inputMD = operators.Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
-  val consumer = operators.UDFProjectOperator(projectPath, intermediate, inputMD = operators.Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
+  val producer = operators.UDFProjectOperator(projectPath, src, outputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
+  val intermediate = operators.UDFProjectOperator(projectPath, producer,  outputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN), inputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
+  val consumer = operators.UDFProjectOperator(projectPath, intermediate, inputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
   val optPipeline =
     consumer
 //    operators.UDFProjectOperator(project,
@@ -844,6 +835,23 @@ def run_process_fused(projectPath: String) = {
 
   val operators = VolcanoOperators(volcano)
   val src = operators.Scan(inputData, 0)
+
+  val pipeline1 = operators.projectFromScalaSource(
+    input = src,
+    inputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN),
+    mainClass = "Foo",
+    code = """
+   |object Foo:
+   |  def main(args: Array[String]): Unit =
+   |    val dataInputStream = new java.io.DataInputStream(System.in)
+   |    while dataInputStream.available > 0 do
+   |      val input = dataInputStream.readInt()
+   |      inputs.foreach: input =>
+   |        System.out.println(input.toString)
+   |""".stripMargin
+ )
+
+  println("hi: " + pipeline1.toList())
   val fused = operators.UDFProjectOperator(fusedPath,src)
   println(fused.toList())
 }

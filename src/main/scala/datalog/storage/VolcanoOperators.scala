@@ -15,6 +15,12 @@ import scala.sys.process.*
 // Indicates the end of the stream
 final val NilTuple: Option[Nothing] = None
 
+enum Metadata:
+  case CSV
+  case Binary(length: Int, byteOrder: ByteOrder)
+
+val Optimized = Metadata.Binary(4, ByteOrder.BIG_ENDIAN) // TODO: remove, just for readability of benchmarks
+
 /**
  * These are relational operators for the pull-based Volcano engine.
  *
@@ -74,19 +80,20 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 //        }
   }
 
-  def scanFromScalaSource(mainClass: String, code: String): VolOperator = {
+  def projectFromScalaSource(input: VolOperator, inputMD: Metadata, mainClass: String, code: String): VolOperator = {
     // Create a new compiler every time since it is not thread-safe.
     val pipeline = (new ScalaCompiler).compileFromCode(mainClass, code)
-    pipeline match
-      case Command(scanCommand) :: rest =>
-        rest.foldLeft[VolOperator](UDFScanOperator(scanCommand.mkString(" ")))((acc, program) => program match
-          case Command(projectCommand) =>
-            UDFProjectOperator(projectCommand.mkString(" "), acc)
-          case builtin: Builtin =>
-            BuiltinProjectOperator(builtin, acc)
-        )
-      case _ =>
-        assert(false, s"Invalid scan pipeline: $pipeline")
+    pipeline.foldLeft(input)((acc, program) => program match
+      case Command(projectCommand) =>
+        // FIXME: This wouldn't be needed if the VolOperator itself stored its Metadata.
+        val accMD = acc match
+          case `input` => inputMD
+          case BuiltinProjectOperator(builtin, _) => builtin.outputMD
+          case  _ => assert(false, s"Input with unknown Metadata: $acc")
+        UDFProjectOperator(projectCommand.mkString(" "), acc)
+      case builtin: Builtin =>
+        BuiltinProjectOperator(builtin, acc)
+    )
   }
 
   case class BuiltinProjectOperator(builtin: Builtin, input: VolOperator) extends VolOperator {
@@ -94,9 +101,9 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     def close(): Unit = input.close()
 
     val projection: CollectionsRow => CollectionsRow = builtin match
-      case Builtin.IntToAscii =>
+      case Builtin.BEIntToCSV =>
         in =>
-          val bytes = in.asInstanceOf[String].getBytes
+          val bytes = in.wrapped.head.asInstanceOf[String].getBytes
           val res =
             bytes(0).toByte + (bytes(1).toByte << 8) + (bytes(2).toByte << 16) + (bytes(3).toByte << 24)
           CollectionsRow(Seq(res))
@@ -133,12 +140,6 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 
     def close(): Unit = {}
   }
-
-  enum Metadata:
-    case CSV
-    case Binary(length: Int, byteOrder: ByteOrder)
-
-  val Optimized = Metadata.Binary(4, ByteOrder.BIG_ENDIAN) // TODO: remove, just for readability of benchmarks
 
   class FusedUDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV) extends UDFProjectOperator(path, input, inputMD, outputMD) {
     override def open(): Unit = {
