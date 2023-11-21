@@ -837,18 +837,20 @@ def run_process_fused(projectPath: String) = {
   val src = operators.Scan(inputData, 0)
 
   val pipeline1 = operators.projectFromScalaSource(
-    input = src,
-    inputMD = Metadata.Binary(4, ByteOrder.BIG_ENDIAN),
     mainClass = "Foo",
-    code = """
-   |object Foo:
-   |  def main(args: Array[String]): Unit =
-   |    val dataInputStream = new java.io.DataInputStream(System.in)
-   |    while dataInputStream.available > 0 do
-   |      val input = dataInputStream.readInt()
-   |      inputs.foreach: input =>
-   |        System.out.println(input.toString)
-   |""".stripMargin
+    code = """|import java.io.*
+              |object Foo:
+              |  def main(args: Array[String]): Unit =
+              |    val reader = new BufferedReader(new InputStreamReader(System.in))
+              |    var line: String = null
+              |    while { line = reader.readLine(); line } != null do
+              |      val input = line.toInt
+              |      val transformed = input + 1
+              |      System.out.println(transformed.toString)
+              |""".stripMargin,
+    input = src,
+    inputMD = Metadata.CSV,
+    outputMD = Metadata.CSV,
  )
 
   println("hi: " + pipeline1.toList())

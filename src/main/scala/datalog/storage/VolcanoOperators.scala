@@ -80,17 +80,17 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 //        }
   }
 
-  def projectFromScalaSource(input: VolOperator, inputMD: Metadata, mainClass: String, code: String): VolOperator = {
+  def projectFromScalaSource(mainClass: String, code: String, input: VolOperator, inputMD: Metadata, outputMD: Metadata): VolOperator = {
     // Create a new compiler every time since it is not thread-safe.
-    val pipeline = (new ScalaCompiler).compileFromCode(mainClass, code)
+    val pipeline = (new ScalaCompiler).compileFromCode(mainClass, code, inputMD, outputMD)
     pipeline.foldLeft(input)((acc, program) => program match
-      case Command(projectCommand) =>
-        // FIXME: This wouldn't be needed if the VolOperator itself stored its Metadata.
-        val accMD = acc match
-          case `input` => inputMD
-          case BuiltinProjectOperator(builtin, _) => builtin.outputMD
-          case  _ => assert(false, s"Input with unknown Metadata: $acc")
-        UDFProjectOperator(projectCommand.mkString(" "), acc)
+      case Command(projectCommand, commandInputMD, commandOutputMD) =>
+        UDFProjectOperator(
+          projectCommand.mkString(" "), acc,
+          inputMD = commandInputMD, outputMD = commandOutputMD,
+          autoConversion = false,
+          preserveCommand = true
+        )
       case builtin: Builtin =>
         BuiltinProjectOperator(builtin, acc)
     )
@@ -103,10 +103,10 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     val projection: CollectionsRow => CollectionsRow = builtin match
       case Builtin.BEIntToCSV =>
         in =>
-          val bytes = in.wrapped.head.asInstanceOf[String].getBytes
-          val res =
-            bytes(0).toByte + (bytes(1).toByte << 8) + (bytes(2).toByte << 16) + (bytes(3).toByte << 24)
-          CollectionsRow(Seq(res))
+          val bytes = in.wrapped.asInstanceOf[Seq[Int]]
+          val asInt =
+            ((bytes(0) & 0xff) << 24) + ((bytes(1) & 0xff) << 16) + ((bytes(2) & 0xff) << 8) + (bytes(3) & 0xff)
+          CollectionsRow(Seq(asInt.toString))
     override def next(): Option[CollectionsRow] =
       input.next().map(projection)
   }
@@ -283,7 +283,10 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
       val process = cmd.run(io) // need process?
     }
   }
-  case class UDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV) extends VolOperator {
+  case class UDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV,
+    autoConversion: Boolean = true,
+    preserveCommand: Boolean = false,
+  ) extends VolOperator {
     var processOutput: BufferedInputStream = _
     var processInput: BufferedOutputStream = _
     val bb = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN) // TODO set to metadata
@@ -305,7 +308,11 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
         }
       )
 
-      val p = s"$path${if (outputMD == Metadata.CSV) "" else "-producer"}${if (inputMD == Metadata.CSV) "" else "-consumer"}"
+      val p =
+        if preserveCommand then
+          path
+        else
+          s"$path${if (autoConversion && outputMD == Metadata.CSV) "" else "-producer"}${if (inputMD == Metadata.CSV) "" else "-consumer"}"
       val process = p.run(io) // need process?
 
 //      processInputWriter = new BufferedWriter(new OutputStreamWriter(processInput))
@@ -329,11 +336,14 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 
             case Metadata.Binary(length, byteOrder) =>
 //              println("Consumer Binary")
-              val inputInt = tuple.wrapped.head.asInstanceOf[Int] // conversion bc CollectionsRow type
-              bb.clear()
-              bb.putInt(inputInt)
-              bb.flip()
-              processInput.write(bb.array())
+              if autoConversion then
+                val inputInt = tuple.wrapped.head.asInstanceOf[Int] // conversion bc CollectionsRow type
+                bb.clear()
+                bb.putInt(inputInt)
+                bb.flip()
+                processInput.write(bb.array())
+              else
+                tuple.wrapped.asInstanceOf[Seq[Int]].foreach(processInput.write)
               processInput.flush()
 
           val response =
@@ -341,18 +351,23 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
               case Metadata.CSV =>
 //                println("Producer CSV")
                 val processOutputReader = new BufferedReader(new InputStreamReader(processOutput))
-                processOutputReader.readLine()
+                Seq(processOutputReader.readLine())
 
               case Metadata.Binary(length, byteOrder) =>
 //                println("Producer Binary")
                 bb.clear()
-                processOutput.read(bb.array())
-                val read = bb.getInt
-//                println(s"Read in $read")
-                read
+                val bytesRead = processOutput.read(bb.array(), 0, 4)
+                assert(bytesRead == 4, s"Attempted to read 4 bytes but got $bytesRead")
+                if autoConversion then
+                  val read = bb.getInt
+                  // println(s"Read in $read")
+                  Seq(read)
+                else
+                  // println("read: " + bb.array().toList)
+                  bb.array().map(b => b.toInt & 0xff).toSeq
 
 //          println(s"received response $response")
-          Some(CollectionsRow(Seq(response))) // Emit the contents of that line
+          Some(CollectionsRow(response)) // Emit the contents of that line
         }
         case None =>
           NilTuple
