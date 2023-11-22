@@ -840,10 +840,11 @@ def run_process_fused(projectPath: String) = {
     s"""|import java.io.*
         |object $mainClass:
         |  def main(args: Array[String]): Unit =
-        |    val reader = new BufferedReader(new InputStreamReader(System.in))
+        |    val streamReader = new InputStreamReader(System.in)
+        |    val bufReader = new BufferedReader(streamReader)
         |    var line: String = null
-        |    while { line = reader.readLine(); line } != null do
-        |      val input = line.toInt
+        |    while { line = bufReader.readLine(); line } != null do
+        |      val input = Integer.valueOf(line)
         |      val transformed = $transformed
         |      System.out.println(transformed.toString)
         |""".stripMargin
