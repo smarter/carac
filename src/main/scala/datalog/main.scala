@@ -842,11 +842,15 @@ def run_process_fused(projectPath: String) = {
         |  def main(args: Array[String]): Unit =
         |    val streamReader = new InputStreamReader(System.in)
         |    val bufReader = new BufferedReader(streamReader)
-        |    var line: String = null
-        |    while { line = bufReader.readLine(); line } != null do
-        |      val input = Integer.valueOf(line)
-        |      val transformed = $transformed
-        |      System.out.println(transformed.toString)
+        |    try
+        |      while true do
+        |        val line = bufReader.readLine()
+        |        if line == null then throw new EOFException
+        |        val input = Integer.parseInt(line)
+        |        val transformed = $transformed
+        |        System.out.println(transformed.toString)
+        |    catch
+        |      case _: EOFException =>
         |""".stripMargin
 
   val addOnePipeline = operators.projectFromScalaSource(
@@ -864,10 +868,11 @@ def run_process_fused(projectPath: String) = {
     inputMD = Metadata.CSV,
     outputMD = Metadata.CSV,
  )
+  println("pipeline: " + addOneMulTwoPipeline)
 
-  println("hi: " + addOneMulTwoPipeline.toList())
-  val fused = operators.UDFProjectOperator(fusedPath,src)
-  println(fused.toList())
+  println("result: " + addOneMulTwoPipeline.toList())
+  // val fused = operators.UDFProjectOperator(fusedPath,src)
+  // println(fused.toList())
 }
 
 @main def main(/*src: String, producer: String, consumer: String*/) = {

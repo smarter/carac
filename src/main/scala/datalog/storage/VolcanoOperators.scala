@@ -107,6 +107,20 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
           val asInt =
             ((bytes(0) & 0xff) << 24) + ((bytes(1) & 0xff) << 16) + ((bytes(2) & 0xff) << 8) + (bytes(3) & 0xff)
           CollectionsRow(Seq(asInt.toString))
+      case Builtin.CSVToBEInt =>
+        in =>
+          // FIXME: This is fragile.
+          val number =
+            if input.isInstanceOf[Scan] then
+              in.wrapped.asInstanceOf[Seq[Int]].head
+            else
+              in.wrapped.asInstanceOf[Seq[String]].head.toInt
+          CollectionsRow(Seq[Int](
+            (number >> 24) & 0xff,
+            (number >> 16) & 0xff,
+            (number >>  8) & 0xff,
+            (number      ) & 0xff
+          ))
     override def next(): Option[CollectionsRow] =
       input.next().map(projection)
   }

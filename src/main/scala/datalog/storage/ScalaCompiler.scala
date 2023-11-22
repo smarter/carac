@@ -11,6 +11,7 @@ import core.Flags.*
 import core.Decorators.*
 import core.StdNames.nme
 import core.Names.*
+import core.NameOps.freshened
 import core.NameKinds.TempResultName
 import core.Constants.*
 import core.Phases.*
@@ -56,6 +57,7 @@ class ScalaCompiler extends Driver:
     val outputDir = Paths.get("./scala-out").toAbsolutePath.toString
     val currentClasspath = ClasspathFromClassloader(getClass.getClassLoader)
     val args = Array(
+      // "-Xprint:typer,splitProgram",
       "-classpath", currentClasspath,
       "-d", outputDir
     )
@@ -78,13 +80,21 @@ class ScalaCompiler extends Driver:
 
 object Utils:
   def writeIntAsBE(x: Int): Unit =
-    val array = Array[Byte](
-      ((x >> 24) & 0xFF).toByte,
-      ((x >> 16) & 0xFF).toByte,
-      ((x >> 8) & 0xFF).toByte,
-      (x & 0xFF).toByte,
-    )
+    val array = new Array[Byte](4)
+    array(0) = ((x >> 24) & 0xff).toByte
+    array(1) = ((x >> 16) & 0xff).toByte
+    array(2) = ((x >>  8) & 0xff).toByte
+    array(3) = ((x      ) & 0xff).toByte
     System.out.write(array, 0, array.length)
+
+  def readBEAsInt(): Int =
+    val array = new Array[Byte](4)
+    val res = System.in.read(array, 0, 4)
+    if res != 4 then throw new java.io.EOFException
+    ((array(0) & 0xff) << 24) +
+    ((array(1) & 0xff) << 16) +
+    ((array(2) & 0xff) <<  8) +
+    ((array(3) & 0xff)      )
 
 class PointsTo extends MacroTransform with IdentityDenotTransformer:
   def phaseName: String = "localPointsTo"
@@ -95,25 +105,17 @@ class PointsTo extends MacroTransform with IdentityDenotTransformer:
   val engine = new StagedExecutionEngine(new DefaultStorageManager(), jo)
   object PointsToProgram:
     val program = Program(engine)
-    // `pNew(x, constr, arg)` means that
-    // `val x = new constr(arg)`
+    /**
+     * `pNew(x, constr, arg)` means that
+     *     val x = new constr(arg)
+     */
     val pNew = program.relation[Int]("pNew")
 
-    // `pSelect(x, qual, name)` means that
-    // `val x = qual.name`
-    val pSelect = program.relation[Int]("pSelect")
-
-    // `pAssign(x, qual, receiver, args*)` means that
-    // `x = qual.receiver(args*)`
-    val pAssign = program.relation[Int]("pAssign")
-
-    // `pCall(x, qual, receiver, args*)` means that
-    // `val x = qual.receiver(args*)`
+    /**
+     * `pCall(x, qual, receiver, args*)` means that
+     * `val x = qual.receiver(args*)`
+     */
     val pCall = program.relation[Int]("pCall")
-
-    val AssignReadLine = program.relation[Int]("AssignReadLine")
-    // IntFromString(x, str) means that val x = Integer.valueOf(str)
-    val IntFromString = program.relation[Int]("IntFromString")
 
     val WrappedNew = program.relation[Int]("WrappedNew")
     val w, x, y, z, constr = program.variable()
@@ -130,27 +132,18 @@ class PointsTo extends MacroTransform with IdentityDenotTransformer:
   private def toId(tree: Tree)(using Context): Int = toId(tree.symbol)
 
   protected def newTransformer(using Context): Transformer =
-    // val valueOfSym = defn.BoxedIntModule.requiredMethod("valueOf".toTermName, List(defn.StringType))
+    // val parseIntSym = defn.BoxedIntModule.requiredMethod("parseInt".toTermName, List(defn.StringType))
     new Transformer:
       override def transform(tree: Tree)(using Context): Tree =
         tree match
           // val ... = new constr(arg)
           case ValDef(_, _, Apply(constr @ Select(New(_), nme.CONSTRUCTOR), List(arg))) =>
             pNew(toId(tree), toId(constr), toId(arg)) :- ()
-          case Assign(lhs: Ident, Apply(receiver @ Select(qual: RefTree, _), args)) if args.forall(_.isInstanceOf[RefTree]) =>
-            val argsIds = args.map(toId)
-            val allParams = toId(lhs) :: toId(qual) :: toId(receiver) :: argsIds
-            pAssign(allParams*) :- ()
+          // val ... = receiver(args*)
           case ValDef(_, _, Apply(receiver @ Select(qual: RefTree, _), args)) if args.forall(_.isInstanceOf[RefTree]) =>
             val argsIds = args.map(toId)
             val allParams = toId(tree) :: toId(qual) :: toId(receiver) :: argsIds
             pCall(allParams*) :- ()
-          // val ... = Integer.valueOf(str)
-          // case ValDef(_, _, Apply(fun, List(str: RefTree))) if fun.symbol == valueOfSym =>
-          //   IntFromString(toId(tree), toId(str)) :- ()
-          // case v: ValDef =>
-          // case v: Assign =>
-          //   println("a: " + v)
           case _ =>
         super.transform(tree)
 
@@ -170,11 +163,13 @@ class SplitProgram(pointsTo: PointsTo) extends MacroTransform with IdentityDenot
 
     val writeIntAsBESym =
       staticRef("datalog.storage.Utils.writeIntAsBE".toTermName).symbol
+    val readBEAsIntSym =
+      staticRef("datalog.storage.Utils.readBEAsInt".toTermName).symbol
     val inSym = staticRef("java.lang.System.in".toTermName).symbol
     val outSym = staticRef("java.lang.System.out".toTermName).symbol
     val printlnSym = outSym.requiredMethod("println", List(defn.StringType))
     val writeSym = outSym.requiredMethod("write", List(defn.IntType))
-    val valueOfSym = defn.BoxedIntModule.requiredMethod("valueOf".toTermName, List(defn.StringType))
+    val parseIntSym = defn.BoxedIntModule.requiredMethod("parseInt".toTermName, List(defn.StringType))
 
     val bufferedReaderSym = staticRef("java.io.BufferedReader".toTypeName).symbol
     val readLineSym = bufferedReaderSym.requiredMethod("readLine", Nil)
@@ -188,55 +183,91 @@ class SplitProgram(pointsTo: PointsTo) extends MacroTransform with IdentityDenot
       // .map:
       //   case Seq(valDef, _) => idToSymbol(valDef)
 
-    // AssignReadLineFromInput(x) means that
-    //     var x = ...
-    //     x = y.readLine()
-    // where `val y` is a `Reader` that wraps `System.in`
+    /**
+     * AssignReadLineFromInput(x) means that
+     *     var x = ...
+     *     x = y.readLine()
+     * where `val y` is a `Reader` that wraps `System.in`
+     */
     val AssignReadLineFromInput = program.relation[Int]("AssignReadLineFromInput")
     AssignReadLineFromInput(x) :-
-      (pAssign(x, y, readLineSym.id), WrappedInput(y, w, z))
+      (pCall(x, y, readLineSym.id), WrappedInput(y, w, z))
 
-    // ReadLineToInt(x, y) means that
-    //     val x = Integer.valueOf(y)
-    // where AssignReadLineFromInput(y)
-    val ReadLineToInt = program.relation[Int]("ReadLineToInt")
-    ReadLineToInt(x, y) :-
-      (pCall(x, w, valueOfSym.id, y), AssignReadLineFromInput(y))
+    /**
+     * ToInt_ReadLine(x, y) means that
+     *     val x = Integer.parseInt(y)
+     * where AssignReadLineFromInput(y)
+     */
+    val ToInt_ReadLine = program.relation[Int]("ToInt_ReadLine")
+    ToInt_ReadLine(x, y) :-
+      (pCall(x, w, parseIntSym.id, y), AssignReadLineFromInput(y))
 
-    val (toInts, readLines) = ReadLineToInt.solve()
+
+    val toInts_ReadLines: Map[Symbol, Symbol] = ToInt_ReadLine.solve()
       .asInstanceOf[Set[Seq[Int]]]
-      .unzip(tup => (idToSymbol(tup(0)), idToSymbol(tup(1))))
+      .map:
+        case Seq(toInt, readLine) => (idToSymbol(toInt), idToSymbol(readLine))
+      .toMap
 
-    val assignReadLineFromInputSyms =
-      AssignReadLineFromInput.solve().asInstanceOf[Set[Seq[Int]]]
-        .map(tup => idToSymbol(tup.head))
+    val readLines = toInts_ReadLines.values.toSet
 
-    println("wrappedInput: " + wrappedInputIds)
-    println("p: " + pAssign.solve())
-    // println("AssignReadLineFromInput: " + AssignReadLineFromInput.solve())
-    println("assignReadLineFromInputSyms: " + assignReadLineFromInputSyms)
-    println("r: " + ReadLineToInt.solve())
-
-    // val pointsTo.program.relation[Int]
+    /**
+     * A map that gets populated during the transformation, when we observe:
+     *
+     *     val x = y.readLine()
+     *
+     * which gets transformed to:
+     *
+     *     val x = ""
+     *     val x$1 = Utils.readBEAsInt()
+     *
+     * This maps maps `x` to `x$1` to replace usages of `x`.
+     */
+    val readLineReplacementMap: mutable.Map[Symbol, Symbol] = mutable.Map.empty
 
     new Transformer:
       // FIXME: for correctness, we need to guarantee that we've identified
-      // everything that writes to the standard output.
+      // everything that writes to stdout, read to stdin.
+      //
+      // Additionally, we're currently assuming that the original code handles
+      // EOFException when the input is closed, but this might not be the case.
       override def transform(tree: Tree)(using Context): Tree = tree match
+
+        // Rewrite System.out.println(x.toString) to
+        //     Utils.writeIntAsBE(x)
+        // and split the conversion in a separate program BEIntToCSV
         case Apply(fun, List(Apply(Select(qual, name), Nil)))
         if fun.symbol == printlnSym
         && name == nme.toString_
         && (qual.tpe <:< defn.IntType) =>
           // Factor out conversion in a separate program
-          assert(postProcessing.isEmpty, postProcessing)
+          assert(postProcessing.isEmpty || postProcessing == Some(Builtin.BEIntToCSV), postProcessing)
           postProcessing = Some(Builtin.BEIntToCSV)
-          // Rewrite System.out.println(x.toString) to
-          // Utils.writeIntAsBE(x)
           ref(writeIntAsBESym).appliedTo(qual)
-        // case Assign(lhs: Ident, _) if assignReadLineFromInputSyms.contains(lhs.symbol) =>
-        case Assign(lhs: Ident, _) if readLines.contains(lhs.symbol) =>
-          // Drop the call to readLine
-          Assign(lhs, Literal(Constant(null)))
+
+        // Rewrite val line = y.readLine() into
+        //     val line = ""
+        //     val line$1 = Utils.readBEAsInt()
+        // and split the conversion in a separate program CSVToBEInt
+        case tree: ValDef if readLines.contains(tree.symbol) =>
+          assert(preProcessing.isEmpty || preProcessing == Some(Builtin.CSVToBEInt), preProcessing)
+          preProcessing =  Some(Builtin.CSVToBEInt)
+          val replacement = SyntheticValDef(
+            name = tree.name.freshened,
+            rhs = ref(readBEAsIntSym).ensureApplied,
+            flags = tree.symbol.flags
+          )
+          readLineReplacementMap(tree.symbol) = replacement.symbol
+          Thicket(List(
+            cpy.ValDef(tree)(rhs = Literal(Constant(""))),
+            replacement
+          ))
+
+        // Rewrite val x = Integer.parseInt(line) into
+        //     val x = line$1
+        case tree: ValDef if toInts_ReadLines.contains(tree.symbol) =>
+          val newRhs = ref(readLineReplacementMap(toInts_ReadLines(tree.symbol)))
+          cpy.ValDef(tree)(rhs = newRhs)
         case _ =>
           super.transform(tree)
 
