@@ -101,12 +101,6 @@ class SplitProgram extends MacroTransform with IdentityDenotTransformer:
     val printlnSym = outSym.requiredMethod("println", List(defn.StringType))
     val writeSym = outSym.requiredMethod("write", List(defn.IntType))
 
-    /// The vals in the current scope whose rhs are instances of Reader wrapping `System.in`.
-    var readers: immutable.Set[Symbol] = scala.collection.immutable.LinkedHashSet.empty
-
-    // The vars in the current scope who were assigned a call to `readLine()` from `currentReaderSym`
-    var readLines: immutable.Set[Symbol] = scala.collection.immutable.LinkedHashSet.empty
-
     new Transformer:
       // FIXME: for correctness, we need to guarantee that we've identified
       // everything that writes to the standard output.
@@ -121,16 +115,6 @@ class SplitProgram extends MacroTransform with IdentityDenotTransformer:
           // Rewrite System.out.println(x.toString) to
           // Utils.writeIntAsBE(x)
           ref(writeIntAsBESym).appliedTo(qual)
-        case b @ Block(stats, expr) =>
-          val oldReaders = readers
-          val oldReadLines = readLines
-          try
-            for 
-          finally
-            readers = oldReaders
-            readLines = oldReadLines
-
-          super.transform(b)
         case _ =>
           super.transform(tree)
 
