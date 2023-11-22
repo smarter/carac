@@ -35,6 +35,9 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 
     def close(): Unit
 
+    /** Return an optimized pipeline with unnecessary transformations removed. */
+    def optimized: VolOperator
+
     def toList(): CollectionsEDB = { // TODO: fix this to use iterator override
       val list = CollectionsEDB()
       this.open()
@@ -100,6 +103,14 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     def open(): Unit = input.open()
     def close(): Unit = input.close()
 
+    def optimized: VolOperator =
+      if builtin == Builtin.CSVToBEInt then
+        input match
+          case BuiltinProjectOperator(Builtin.BEIntToCSV, subInput) =>
+            return subInput.optimized
+          case _ =>
+      this.copy(input = input.optimized)
+
     val projection: CollectionsRow => CollectionsRow = builtin match
       case Builtin.BEIntToCSV =>
         in =>
@@ -153,6 +164,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     }
 
     def close(): Unit = {}
+
+    def optimized: VolOperator = this
   }
 
   class FusedUDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV) extends UDFProjectOperator(path, input, inputMD, outputMD) {
@@ -192,6 +205,9 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
       processInput = new BufferedOutputStream(producerProcess.getOutputStream)
       processOutput = new BufferedInputStream(consumerProcess.getInputStream)
     }
+
+    override def optimized: VolOperator =
+      new FusedUDFProjectOperator(path, input.optimized, inputMD, outputMD)
   }
 
   class Fused3xUDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV) extends UDFProjectOperator(path, input, inputMD, outputMD) {
@@ -270,6 +286,9 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
       processOutput = new BufferedInputStream(consumerProcess.getInputStream)
     }
     // TODO: clean up pipe threads on close
+
+    override def optimized: VolOperator =
+      new Fused3xUDFProjectOperator(path, input.optimized, inputMD, outputMD)
   }
 
   class FusedUnixUDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV) extends UDFProjectOperator(path, input, inputMD, outputMD) {
@@ -296,6 +315,9 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
 
       val process = cmd.run(io) // need process?
     }
+
+    override def optimized: VolOperator =
+      new FusedUnixUDFProjectOperator(path, input.optimized, inputMD, outputMD)
   }
   case class UDFProjectOperator(path: String, input: VolOperator, inputMD: Metadata = Metadata.CSV, outputMD: Metadata = Metadata.CSV,
     autoConversion: Boolean = true,
@@ -396,12 +418,16 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
       processInput = null
       processOutput = null
     }
+
+    def optimized: VolOperator =
+      copy(input = input.optimized)
   }
 
   case class EmptyScan() extends VolOperator {
     def open(): Unit = {}
     def next(): Option[CollectionsRow] = NilTuple
     def close(): Unit = {}
+    def optimized: VolOperator = this
   }
 
   case class Scan(relation: CollectionsEDB, rId: Int) extends VolOperator {
@@ -422,6 +448,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     }
 
     def close(): Unit = {}
+
+    def optimized: VolOperator = this
   }
 
   // NOTE: this isn't currently used by SPJU bc merged scan+filter
@@ -440,6 +468,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     }
 
     def close(): Unit = input.close()
+
+    def optimized: VolOperator = copy(input = input.optimized)(cond)
   }
 
   case class Project(input: VolOperator, ixs: Seq[(String, Constant)]) extends VolOperator {
@@ -467,6 +497,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     }
 
     def close(): Unit = input.close()
+
+    def optimized: VolOperator = copy(input = input.optimized)
   }
 
   case class Join(inputs: Seq[VolOperator],
@@ -524,6 +556,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
     def close(): Unit = {
       inputs.foreach(i => i.close())
     }
+
+    def optimized: VolOperator = copy(inputs = inputs.map(_.optimized))
   }
 
 
@@ -548,6 +582,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
         Option(outputRelation(index - 1))
     }
     def close(): Unit = ops.foreach(o => o.close())
+
+    def optimized: VolOperator = copy(ops = ops.map(_.optimized))
   }
   case class Diff(ops: Seq[VolOperator]) extends VolOperator {
     private var outputRelation: CollectionsEDB = CollectionsEDB()
@@ -562,6 +598,8 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
         Option(outputRelation(index - 1))
     }
     def close(): Unit = ops.foreach(o => o.close())
+
+    def optimized: VolOperator = copy(ops = ops.map(_.optimized))
   }
 
 
@@ -581,5 +619,7 @@ class VolcanoOperators[S <: StorageManager](val storageManager: S) {
         Option(outputRelation(index - 1))
     }
     def close(): Unit = input.close()
+
+    def optimized: VolOperator = copy(input = input.optimized)
   }
 }

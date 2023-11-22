@@ -868,9 +868,15 @@ def run_process_fused(projectPath: String) = {
     inputMD = Metadata.CSV,
     outputMD = Metadata.CSV,
  )
-  println("pipeline: " + addOneMulTwoPipeline)
 
-  println("result: " + addOneMulTwoPipeline.toList())
+  // FIXME: calling toList twice leads to crashes, so we can't directly compare
+  // the optimized and non-optimized pipelines.
+  val time = System.nanoTime
+  addOneMulTwoPipeline.toList()
+  // addOneMulTwoPipeline.optimized.toList()
+  val duration = (System.nanoTime - time)/1e9
+  println(s"pipeline duration: $duration s")
+
   // val fused = operators.UDFProjectOperator(fusedPath,src)
   // println(fused.toList())
 }
