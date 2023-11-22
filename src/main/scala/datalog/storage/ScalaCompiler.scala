@@ -107,14 +107,18 @@ class PointsTo extends MacroTransform with IdentityDenotTransformer:
     // `x = qual.receiver(args*)`
     val pAssign = program.relation[Int]("pAssign")
 
+    // `pCall(x, qual, receiver, args*)` means that
+    // `val x = qual.receiver(args*)`
+    val pCall = program.relation[Int]("pCall")
+
     val AssignReadLine = program.relation[Int]("AssignReadLine")
     // IntFromString(x, str) means that val x = Integer.valueOf(str)
     val IntFromString = program.relation[Int]("IntFromString")
 
     val WrappedNew = program.relation[Int]("WrappedNew")
-    val x, y, z, constr, unused1 = program.variable()
+    val w, x, y, z, constr = program.variable()
     WrappedNew(x, constr, y) :- pNew(x, constr, y)
-    WrappedNew(x, constr, y) :- (pNew(x, constr, z), WrappedNew(z, unused1, y))
+    WrappedNew(x, constr, y) :- (pNew(x, constr, z), WrappedNew(z, w, y))
   import PointsToProgram.*
 
   private val idToSymbolMap: mutable.Map[Int, Symbol] = mutable.LinkedHashMap.empty
@@ -126,7 +130,7 @@ class PointsTo extends MacroTransform with IdentityDenotTransformer:
   private def toId(tree: Tree)(using Context): Int = toId(tree.symbol)
 
   protected def newTransformer(using Context): Transformer =
-    val valueOfSym = defn.BoxedIntModule.requiredMethod("valueOf".toTermName, List(defn.StringType))
+    // val valueOfSym = defn.BoxedIntModule.requiredMethod("valueOf".toTermName, List(defn.StringType))
     new Transformer:
       override def transform(tree: Tree)(using Context): Tree =
         tree match
@@ -137,16 +141,16 @@ class PointsTo extends MacroTransform with IdentityDenotTransformer:
             val argsIds = args.map(toId)
             val allParams = toId(lhs) :: toId(qual) :: toId(receiver) :: argsIds
             pAssign(allParams*) :- ()
-          // case ValDef(_, _, Select(qual, receiver)) if args.forall(_.isInstanceOf[Ident]) =>
-          //   registerSymbols(tree.symbol, str.symbol)
-          //   args.foreach(arg => registerSymbol(arg.symbol))
-            
+          case ValDef(_, _, Apply(receiver @ Select(qual: RefTree, _), args)) if args.forall(_.isInstanceOf[RefTree]) =>
+            val argsIds = args.map(toId)
+            val allParams = toId(tree) :: toId(qual) :: toId(receiver) :: argsIds
+            pCall(allParams*) :- ()
           // val ... = Integer.valueOf(str)
-          case ValDef(_, _, Apply(fun, List(str: RefTree))) if fun.symbol == valueOfSym =>
-            IntFromString(toId(tree), toId(str)) :- ()
-          case v: ValDef =>
-          case v: Assign =>
-            println("a: " + v)
+          // case ValDef(_, _, Apply(fun, List(str: RefTree))) if fun.symbol == valueOfSym =>
+          //   IntFromString(toId(tree), toId(str)) :- ()
+          // case v: ValDef =>
+          // case v: Assign =>
+          //   println("a: " + v)
           case _ =>
         super.transform(tree)
 
@@ -170,6 +174,7 @@ class SplitProgram(pointsTo: PointsTo) extends MacroTransform with IdentityDenot
     val outSym = staticRef("java.lang.System.out".toTermName).symbol
     val printlnSym = outSym.requiredMethod("println", List(defn.StringType))
     val writeSym = outSym.requiredMethod("write", List(defn.IntType))
+    val valueOfSym = defn.BoxedIntModule.requiredMethod("valueOf".toTermName, List(defn.StringType))
 
     val bufferedReaderSym = staticRef("java.io.BufferedReader".toTypeName).symbol
     val readLineSym = bufferedReaderSym.requiredMethod("readLine", Nil)
@@ -183,13 +188,34 @@ class SplitProgram(pointsTo: PointsTo) extends MacroTransform with IdentityDenot
       // .map:
       //   case Seq(valDef, _) => idToSymbol(valDef)
 
+    // AssignReadLineFromInput(x) means that
+    //     var x = ...
+    //     x = y.readLine()
+    // where `val y` is a `Reader` that wraps `System.in`
     val AssignReadLineFromInput = program.relation[Int]("AssignReadLineFromInput")
-    AssignReadLineFromInput(x, y) :-
-      (pAssign(x, y, readLineSym.id), WrappedInput(y, unused1, z))
+    AssignReadLineFromInput(x) :-
+      (pAssign(x, y, readLineSym.id), WrappedInput(y, w, z))
+
+    // ReadLineToInt(x, y) means that
+    //     val x = Integer.valueOf(y)
+    // where AssignReadLineFromInput(y)
+    val ReadLineToInt = program.relation[Int]("ReadLineToInt")
+    ReadLineToInt(x, y) :-
+      (pCall(x, w, valueOfSym.id, y), AssignReadLineFromInput(y))
+
+    val (toInts, readLines) = ReadLineToInt.solve()
+      .asInstanceOf[Set[Seq[Int]]]
+      .unzip(tup => (idToSymbol(tup(0)), idToSymbol(tup(1))))
+
+    val assignReadLineFromInputSyms =
+      AssignReadLineFromInput.solve().asInstanceOf[Set[Seq[Int]]]
+        .map(tup => idToSymbol(tup.head))
 
     println("wrappedInput: " + wrappedInputIds)
     println("p: " + pAssign.solve())
-    println("AssignReadLineFromInput: " + AssignReadLineFromInput.solve())
+    // println("AssignReadLineFromInput: " + AssignReadLineFromInput.solve())
+    println("assignReadLineFromInputSyms: " + assignReadLineFromInputSyms)
+    println("r: " + ReadLineToInt.solve())
 
     // val pointsTo.program.relation[Int]
 
@@ -207,6 +233,10 @@ class SplitProgram(pointsTo: PointsTo) extends MacroTransform with IdentityDenot
           // Rewrite System.out.println(x.toString) to
           // Utils.writeIntAsBE(x)
           ref(writeIntAsBESym).appliedTo(qual)
+        // case Assign(lhs: Ident, _) if assignReadLineFromInputSyms.contains(lhs.symbol) =>
+        case Assign(lhs: Ident, _) if readLines.contains(lhs.symbol) =>
+          // Drop the call to readLine
+          Assign(lhs, Literal(Constant(null)))
         case _ =>
           super.transform(tree)
 
