@@ -836,24 +836,35 @@ def run_process_fused(projectPath: String) = {
   val operators = VolcanoOperators(volcano)
   val src = operators.Scan(inputData, 0)
 
-  val pipeline1 = operators.projectFromScalaSource(
-    mainClass = "Foo",
-    code = """|import java.io.*
-              |object Foo:
-              |  def main(args: Array[String]): Unit =
-              |    val reader = new BufferedReader(new InputStreamReader(System.in))
-              |    var line: String = null
-              |    while { line = reader.readLine(); line } != null do
-              |      val input = line.toInt
-              |      val transformed = input + 1
-              |      System.out.println(transformed.toString)
-              |""".stripMargin,
+  def wrappedCode(mainClass: String, transformed: String): String =
+    s"""|import java.io.*
+        |object $mainClass:
+        |  def main(args: Array[String]): Unit =
+        |    val reader = new BufferedReader(new InputStreamReader(System.in))
+        |    var line: String = null
+        |    while { line = reader.readLine(); line } != null do
+        |      val input = line.toInt
+        |      val transformed = $transformed
+        |      System.out.println(transformed.toString)
+        |""".stripMargin
+
+  val addOnePipeline = operators.projectFromScalaSource(
+    mainClass = "AddOne",
+    code = wrappedCode("AddOne", "input + 1"),
     input = src,
     inputMD = Metadata.CSV,
     outputMD = Metadata.CSV,
  )
 
-  println("hi: " + pipeline1.toList())
+  val addOneMulTwoPipeline = operators.projectFromScalaSource(
+    mainClass = "MulTwo",
+    code = wrappedCode("MulTwo", "input * 2"),
+    input = addOnePipeline,
+    inputMD = Metadata.CSV,
+    outputMD = Metadata.CSV,
+ )
+
+  println("hi: " + addOneMulTwoPipeline.toList())
   val fused = operators.UDFProjectOperator(fusedPath,src)
   println(fused.toList())
 }

@@ -34,6 +34,8 @@ case class Command(
 enum Builtin(override val inputMD: Metadata, override val outputMD: Metadata) extends Program:
   /** Big-Endian Ints => CSV. */
   case BEIntToCSV extends Builtin(Metadata.Binary(4, ByteOrder.BIG_ENDIAN), Metadata.CSV)
+  /** CSV => Big-Endian Ints. */
+  case CSVToBEInt extends Builtin(Metadata.CSV, Metadata.Binary(4, ByteOrder.BIG_ENDIAN))
 
 class ScalaCompiler extends Driver:
   private val splitProgram = SplitProgram()
@@ -72,7 +74,7 @@ class ScalaCompiler extends Driver:
     programs
 
 object Utils:
-  def printIntAsBE(x: Int): Unit =
+  def writeIntAsBE(x: Int): Unit =
     val array = Array[Byte](
       ((x >> 24) & 0xFF).toByte,
       ((x >> 16) & 0xFF).toByte,
@@ -92,11 +94,19 @@ class SplitProgram extends MacroTransform with IdentityDenotTransformer:
     postProcessing = None
   
   protected def newTransformer(using Context): Transformer =
-    val printIntAsBESym =
-      staticRef("datalog.storage.Utils.printIntAsBE".toTermName).symbol
+    val writeIntAsBESym =
+      staticRef("datalog.storage.Utils.writeIntAsBE".toTermName).symbol
+    val inSym = staticRef("java.lang.System.in".toTermName).symbol
     val outSym = staticRef("java.lang.System.out".toTermName).symbol
     val printlnSym = outSym.requiredMethod("println", List(defn.StringType))
     val writeSym = outSym.requiredMethod("write", List(defn.IntType))
+
+    /// The vals in the current scope whose rhs are instances of Reader wrapping `System.in`.
+    var readers: immutable.Set[Symbol] = scala.collection.immutable.LinkedHashSet.empty
+
+    // The vars in the current scope who were assigned a call to `readLine()` from `currentReaderSym`
+    var readLines: immutable.Set[Symbol] = scala.collection.immutable.LinkedHashSet.empty
+
     new Transformer:
       // FIXME: for correctness, we need to guarantee that we've identified
       // everything that writes to the standard output.
@@ -109,8 +119,18 @@ class SplitProgram extends MacroTransform with IdentityDenotTransformer:
           assert(postProcessing.isEmpty, postProcessing)
           postProcessing = Some(Builtin.BEIntToCSV)
           // Rewrite System.out.println(x.toString) to
-          // Utils.printIntAsBE(x)
-          ref(printIntAsBESym).appliedTo(qual)
+          // Utils.writeIntAsBE(x)
+          ref(writeIntAsBESym).appliedTo(qual)
+        case b @ Block(stats, expr) =>
+          val oldReaders = readers
+          val oldReadLines = readLines
+          try
+            for 
+          finally
+            readers = oldReaders
+            readLines = oldReadLines
+
+          super.transform(b)
         case _ =>
           super.transform(tree)
 
